@@ -11,9 +11,14 @@ const JarvisAgent = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState(null);
+  const [threadId, setThreadId] = useState(null);
+  const [backendStatus, setBackendStatus] = useState('connecting');
   
   const recognitionRef = useRef(null);
   const synthRef = useRef(null);
+  
+  // Backend API configuration
+  const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5050/api';
 
   // Available AI agents
   const aiAgents = [
@@ -96,7 +101,47 @@ const JarvisAgent = () => {
     populateVoiceList(); // Initial call
   }, []);
 
-  // Analyze query and route to appropriate agent
+  // Initialize thread and check backend status
+  useEffect(() => {
+    const initializeBackend = async () => {
+      try {
+        // Check backend health
+        const healthResponse = await fetch(`${API_BASE.replace('/api', '')}/health`);
+        if (!healthResponse.ok) throw new Error('Backend not available');
+        
+        // Create or get thread
+        const threadResponse = await fetch(`${API_BASE}/thread`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: 'default' })
+        });
+        
+        if (!threadResponse.ok) throw new Error('Failed to create thread');
+        
+        const { threadId: newThreadId } = await threadResponse.json();
+        setThreadId(newThreadId);
+        setBackendStatus('connected');
+        
+        // Add welcome message
+        const welcomeMessage = {
+          id: Date.now(),
+          text: 'Hello! I\'m JARVIS, your AI assistant. I can help you with weather, emails, research, and much more. How can I assist you today?',
+          sender: 'ai',
+          agent: 'JARVIS',
+          timestamp: new Date().toLocaleTimeString()
+        };
+        setMessages([welcomeMessage]);
+        
+      } catch (error) {
+        console.error('Backend initialization failed:', error);
+        setBackendStatus('error');
+      }
+    };
+    
+    initializeBackend();
+  }, []);
+
+  // Analyze query and route to appropriate agent (visual only now)
   const analyzeAndRoute = (query) => {
     const lowerQuery = query.toLowerCase();
     
@@ -142,9 +187,9 @@ const JarvisAgent = () => {
     }
   };
 
-  // Handle message submission
+  // Handle message submission with real AI
   const handleSubmit = async (text) => {
-    if (!text.trim()) return;
+    if (!text.trim() || !threadId || backendStatus !== 'connected') return;
 
     const agent = analyzeAndRoute(text);
     setSelectedAgent(agent);
@@ -161,20 +206,50 @@ const JarvisAgent = () => {
     setInputText('');
     setTranscript('');
 
-    // Simulate AI processing
-    setTimeout(() => {
-      const response = {
+    try {
+      // Send message to OpenAI Assistant
+      const response = await fetch(`${API_BASE}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          message: text, 
+          threadId 
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const { response: aiResponse, timestamp } = await response.json();
+      
+      const aiMessage = {
         id: Date.now() + 1,
-        text: `I've routed your request to the ${agent.name}. Processing your query: "${text}"`,
+        text: aiResponse,
         sender: 'ai',
-        agent: agent.name,
+        agent: 'JARVIS',
         timestamp: new Date().toLocaleTimeString()
       };
       
-      setMessages(prev => [...prev, response]);
-      speak(response.text);
+      setMessages(prev => [...prev, aiMessage]);
+      speak(aiResponse);
+      
+    } catch (error) {
+      console.error('Error communicating with AI:', error);
+      
+      const errorMessage = {
+        id: Date.now() + 1,
+        text: 'I apologize, but I\'m having trouble connecting to my systems right now. Please try again in a moment.',
+        sender: 'ai',
+        agent: 'JARVIS',
+        timestamp: new Date().toLocaleTimeString()
+      };
+      
+      setMessages(prev => [...prev, errorMessage]);
+      speak(errorMessage.text);
+    } finally {
       setIsProcessing(false);
-    }, 1500);
+    }
   };
 
   return (
@@ -208,6 +283,20 @@ const JarvisAgent = () => {
             JARVIS AI Assistant
           </h1>
           <p className="text-gray-400 mt-2">Voice-activated intelligent routing system</p>
+          
+          {/* Backend Status Indicator */}
+          <div className="mt-3 flex items-center justify-center space-x-2">
+            <div className={`w-2 h-2 rounded-full ${
+              backendStatus === 'connected' ? 'bg-green-400' :
+              backendStatus === 'connecting' ? 'bg-yellow-400 animate-pulse' :
+              'bg-red-400'
+            }`} />
+            <span className="text-sm text-gray-400">
+              {backendStatus === 'connected' ? 'AI Systems Online' :
+               backendStatus === 'connecting' ? 'Connecting to AI Systems...' :
+               'AI Systems Offline'}
+            </span>
+          </div>
         </div>
 
         {/* Voice Selector */}
