@@ -30,3 +30,4 @@ bun.lockb
 yarn.lock
 package-lock 2.json
 windsurf_deployment.yaml
+env(not corrupted july6)

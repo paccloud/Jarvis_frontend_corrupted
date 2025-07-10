@@ -4,18 +4,35 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
+import multer from 'multer';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-
-// Load environment variables
-dotenv.config();
+import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Load environment variables
+dotenv.config({ path: join(__dirname, '.env') });
+
+// Configure multer for file uploads
+const uploadDir = join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  }
+});
+const upload = multer({ storage });
+
 // Initialize Express app
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5050;
 
 // Initialize OpenAI
 const openai = new OpenAI({
@@ -35,7 +52,7 @@ app.use(limiter);
 
 // CORS configuration
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  origin: [process.env.CORS_ORIGIN || 'http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174', 'http://127.0.0.1:53236'],
   credentials: true,
 }));
 
@@ -157,13 +174,50 @@ const toolFunctions = {
 
   trigger_n8n_workflow: async (args) => {
     const { workflow_name, data } = args;
-    // Mock n8n trigger - replace with actual n8n webhook call
-    console.log(`Triggering n8n workflow: ${workflow_name}`, data);
-    return {
-      success: true,
-      workflow: workflow_name,
-      triggered_at: new Date().toISOString()
-    };
+    
+    try {
+      // Get n8n webhook URL from environment
+      const n8nBaseUrl = process.env.N8N_BASE_URL || 'https://n8n.scrapha.com';
+      const webhookUrl = `${n8nBaseUrl}/webhook/${workflow_name}`;
+      
+      console.log(`Triggering n8n workflow: ${workflow_name}`, data);
+      
+      // Call n8n webhook
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': process.env.N8N_API_KEY ? `Bearer ${process.env.N8N_API_KEY}` : undefined
+        },
+        body: JSON.stringify({
+          ...data,
+          timestamp: new Date().toISOString(),
+          source: 'jarvis-ai'
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`N8N workflow failed: ${response.status}`);
+      }
+      
+      const result = await response.json();
+      
+      return {
+        success: true,
+        workflow: workflow_name,
+        result: result,
+        triggered_at: new Date().toISOString()
+      };
+      
+    } catch (error) {
+      console.error(`Error triggering n8n workflow ${workflow_name}:`, error);
+      return {
+        success: false,
+        workflow: workflow_name,
+        error: error.message,
+        triggered_at: new Date().toISOString()
+      };
+    }
   },
 
   search_web: async (args) => {
@@ -211,18 +265,47 @@ app.post('/api/thread', async (req, res) => {
 });
 
 // Send message to assistant
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', upload.array('files'), async (req, res) => {
   try {
-    const { message, threadId } = req.body;
+    const { message, threadId, agent, workflow } = req.body;
+    const files = req.files;
 
-    if (!message || !threadId) {
-      return res.status(400).json({ error: 'Message and threadId are required' });
+    if ((!message && (!files || files.length === 0)) || !threadId) {
+      return res.status(400).json({ error: 'Message or files, and threadId are required' });
+    }
+    
+    // Enhanced system prompt based on selected agent
+    let systemPrompt = '';
+    switch(agent) {
+      case 'financial':
+        systemPrompt = 'You are a financial assistant. Help users with budgeting, expense tracking, and financial planning. Always trigger the financial-agent workflow for financial tasks.';
+        break;
+      case 'tasks':
+        systemPrompt = 'You are a task organization assistant. Help users organize their to-do lists, schedule appointments, and manage their time. Always trigger the task-organizer workflow for task management.';
+        break;
+      case 'email':
+        systemPrompt = 'You are an email assistant. Help users compose, send, and manage emails. Always trigger the email-assistant workflow for email-related tasks.';
+        break;
+      case 'receipts':
+        systemPrompt = 'You are a receipt sorting assistant. Help users categorize, organize, and track their receipts and documents. Always trigger the receipt-sorter workflow for document management.';
+        break;
+      default:
+        systemPrompt = 'You are JARVIS, a helpful AI assistant. Analyze user requests and trigger appropriate workflows as needed.';
     }
 
-    // Add message to thread
+    // Add message to thread with system context
+    let content = `${systemPrompt}\n\nUser request: ${message || ''}`;
+    
+    if (files && files.length > 0) {
+      content += `\n\n--- Attached Files ---\n`;
+      files.forEach(file => {
+        content += `- ${file.originalname} (${(file.size / 1024).toFixed(2)} KB)\n`;
+      });
+    }
+
     await openai.beta.threads.messages.create(threadId, {
       role: 'user',
-      content: message,
+      content: content,
     });
 
     // Run the assistant
@@ -272,9 +355,28 @@ app.post('/api/chat', async (req, res) => {
     // Get messages
     const messages = await openai.beta.threads.messages.list(threadId);
     const lastMessage = messages.data[0];
+    
+    // Trigger n8n workflow if specific agent was selected
+    let workflowResult = null;
+    if (workflow && workflow !== 'general-assistant') {
+      workflowResult = await toolFunctions.trigger_n8n_workflow({
+        workflow_name: workflow,
+        data: {
+          userMessage: message,
+          agent: agent,
+          aiResponse: lastMessage.content[0].text.value,
+          sessionId: `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          context: {
+            threadId: threadId,
+            timestamp: new Date().toISOString()
+          }
+        }
+      });
+    }
 
     res.json({
       response: lastMessage.content[0].text.value,
+      workflowResult: workflowResult,
       timestamp: new Date().toISOString(),
     });
 
@@ -321,6 +423,8 @@ app.listen(PORT, () => {
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? 'Configured' : 'Missing'}`);
   console.log(`🤖 Assistant ID: ${process.env.OPENAI_ASSISTANT_ID ? 'Configured' : 'Missing'}`);
+  console.log(`🔗 N8N Base URL: ${process.env.N8N_BASE_URL || 'http://localhost:5678'}`);
+  console.log(`🔐 N8N API Key: ${process.env.N8N_API_KEY ? 'Configured' : 'Not Set'}`);
 });
 
 export default app;

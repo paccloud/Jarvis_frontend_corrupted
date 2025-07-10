@@ -4,24 +4,35 @@
   "description": "Backend API for JARVIS AI Assistant with OpenAI integration",
   "main": "server.js",
   "type": "module",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
+    "start:realtime": "node realtime-server.js",
     "dev": "nodemon server.js",
+    "dev:realtime": "nodemon realtime-server.js",
+    "dev:both": "concurrently \"npm run dev\" \"npm run dev:realtime\"",
     "build": "echo 'No build needed for Node.js'"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "concurrently": "^9.2.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "openai": "^4.24.1",
-    "axios": "^1.6.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.2.0",
     "helmet": "^7.1.0",
-    "express-rate-limit": "^7.1.5"
+    "multer": "^1.4.5-lts.1",
+    "openai": "^4.38.3",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
   },
-  "keywords": ["ai", "assistant", "openai", "jarvis"],
+  "keywords": [
+    "ai",
+    "assistant",
+    "openai",
+    "jarvis"
+  ],
   "author": "JARVIS Team",
   "license": "MIT"
 }

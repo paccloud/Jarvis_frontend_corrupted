@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Mic, MicOff, Send, Bot, Brain, Search, Code, FileText } from 'lucide-react';
+import FileUpload from './FileUpload';
 
 const JarvisAgent = () => {
   const [isListening, setIsListening] = useState(false);
@@ -13,6 +14,7 @@ const JarvisAgent = () => {
   const [selectedVoice, setSelectedVoice] = useState(null);
   const [threadId, setThreadId] = useState(null);
   const [backendStatus, setBackendStatus] = useState('connecting');
+  const [selectedFiles, setSelectedFiles] = useState([]);
   
   const recognitionRef = useRef(null);
   const synthRef = useRef(null);
@@ -20,13 +22,13 @@ const JarvisAgent = () => {
   // Backend API configuration
   const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5050/api';
 
-  // Available AI agents
+  // Available AI agents with n8n workflow mapping
   const aiAgents = [
-    { id: 'general', name: 'General Assistant', icon: Bot, color: 'from-blue-500 to-cyan-500' },
-    { id: 'research', name: 'Research Agent', icon: Search, color: 'from-purple-500 to-pink-500' },
-    { id: 'code', name: 'Code Assistant', icon: Code, color: 'from-green-500 to-emerald-500' },
-    { id: 'creative', name: 'Creative Writer', icon: FileText, color: 'from-orange-500 to-red-500' },
-    { id: 'analysis', name: 'Data Analyst', icon: Brain, color: 'from-indigo-500 to-purple-500' },
+    { id: 'financial', name: 'Financial Assistant', icon: Bot, color: 'from-green-500 to-emerald-500', workflow: 'financial-agent' },
+    { id: 'tasks', name: 'Task Organizer', icon: FileText, color: 'from-blue-500 to-cyan-500', workflow: 'task-organizer' },
+    { id: 'email', name: 'Email Assistant', icon: Send, color: 'from-purple-500 to-pink-500', workflow: 'email-assistant' },
+    { id: 'receipts', name: 'Receipt Sorter', icon: Search, color: 'from-orange-500 to-red-500', workflow: 'receipt-sorter' },
+    { id: 'general', name: 'General Assistant', icon: Brain, color: 'from-indigo-500 to-purple-500', workflow: 'general-assistant' },
   ];
 
   // Generate stable random positions for background elements
@@ -141,20 +143,37 @@ const JarvisAgent = () => {
     initializeBackend();
   }, []);
 
-  // Analyze query and route to appropriate agent (visual only now)
+  // Analyze query and route to appropriate n8n workflow
   const analyzeAndRoute = (query) => {
     const lowerQuery = query.toLowerCase();
     
-    if (lowerQuery.includes('code') || lowerQuery.includes('programming') || lowerQuery.includes('debug')) {
-      return aiAgents.find(a => a.id === 'code');
-    } else if (lowerQuery.includes('research') || lowerQuery.includes('search') || lowerQuery.includes('find')) {
-      return aiAgents.find(a => a.id === 'research');
-    } else if (lowerQuery.includes('write') || lowerQuery.includes('story') || lowerQuery.includes('creative')) {
-      return aiAgents.find(a => a.id === 'creative');
-    } else if (lowerQuery.includes('analyze') || lowerQuery.includes('data') || lowerQuery.includes('statistics')) {
-      return aiAgents.find(a => a.id === 'analysis');
+    // Financial keywords
+    if (lowerQuery.includes('budget') || lowerQuery.includes('money') || lowerQuery.includes('expense') || 
+        lowerQuery.includes('income') || lowerQuery.includes('financial') || lowerQuery.includes('spending') ||
+        lowerQuery.includes('savings') || lowerQuery.includes('investment') || lowerQuery.includes('bank')) {
+      return aiAgents.find(a => a.id === 'financial');
     }
     
+    // Task organization keywords
+    if (lowerQuery.includes('task') || lowerQuery.includes('todo') || lowerQuery.includes('organize') || 
+        lowerQuery.includes('schedule') || lowerQuery.includes('plan') || lowerQuery.includes('reminder') ||
+        lowerQuery.includes('calendar') || lowerQuery.includes('meeting') || lowerQuery.includes('appointment')) {
+      return aiAgents.find(a => a.id === 'tasks');
+    }
+    
+    // Email keywords
+    if (lowerQuery.includes('email') || lowerQuery.includes('send') || lowerQuery.includes('mail') || 
+        lowerQuery.includes('message') || lowerQuery.includes('contact') || lowerQuery.includes('reply')) {
+      return aiAgents.find(a => a.id === 'email');
+    }
+    
+    // Receipt sorting keywords
+    if (lowerQuery.includes('receipt') || lowerQuery.includes('sort') || lowerQuery.includes('categorize') || 
+        lowerQuery.includes('expense report') || lowerQuery.includes('document') || lowerQuery.includes('scan')) {
+      return aiAgents.find(a => a.id === 'receipts');
+    }
+    
+    // Default to general assistant
     return aiAgents.find(a => a.id === 'general');
   };
 
@@ -187,9 +206,9 @@ const JarvisAgent = () => {
     }
   };
 
-  // Handle message submission with real AI
+  // Handle message submission with AI and n8n workflow routing
   const handleSubmit = async (text) => {
-    if (!text.trim() || !threadId || backendStatus !== 'connected') return;
+    if ((!text.trim() && selectedFiles.length === 0) || !threadId || backendStatus !== 'connected') return;
 
     const agent = analyzeAndRoute(text);
     setSelectedAgent(agent);
@@ -205,29 +224,40 @@ const JarvisAgent = () => {
     setMessages(prev => [...prev, userMessage]);
     setInputText('');
     setTranscript('');
+    setSelectedFiles([]);
 
     try {
-      // Send message to OpenAI Assistant
+      const formData = new FormData();
+      formData.append('message', text);
+      formData.append('threadId', threadId);
+      formData.append('agent', agent.id);
+      formData.append('workflow', agent.workflow);
+      selectedFiles.forEach(file => {
+        formData.append('files', file);
+      });
+
+      // Send message to backend with agent context
       const response = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          message: text, 
-          threadId 
-        })
+        body: formData
       });
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      const { response: aiResponse, timestamp } = await response.json();
+      const { response: aiResponse, workflowResult, timestamp } = await response.json();
+      
+      let responseText = aiResponse;
+      if (workflowResult && workflowResult.success) {
+        responseText += ` \n\n✅ ${agent.name} workflow executed successfully.`;
+      }
       
       const aiMessage = {
         id: Date.now() + 1,
-        text: aiResponse,
+        text: responseText,
         sender: 'ai',
-        agent: 'JARVIS',
+        agent: agent.name,
         timestamp: new Date().toLocaleTimeString()
       };
       
@@ -282,7 +312,7 @@ const JarvisAgent = () => {
           <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
             JARVIS AI Assistant
           </h1>
-          <p className="text-gray-400 mt-2">Voice-activated intelligent routing system</p>
+          <p className="text-gray-400 mt-2">Voice-activated AI with n8n workflow integration</p>
           
           {/* Backend Status Indicator */}
           <div className="mt-3 flex items-center justify-center space-x-2">
@@ -320,6 +350,30 @@ const JarvisAgent = () => {
           </select>
         </div>
 
+        {/* Agent Selection Pills */}
+        <div className="flex flex-wrap justify-center gap-2 mb-6 px-4">
+          {aiAgents.map((agent) => {
+            const IconComponent = agent.icon;
+            return (
+              <div
+                key={agent.id}
+                className={`
+                  px-3 py-2 rounded-full text-xs font-medium transition-all duration-300
+                  ${selectedAgent && selectedAgent.id === agent.id 
+                    ? `bg-gradient-to-r ${agent.color} text-white shadow-lg` 
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                  }
+                `}
+              >
+                <div className="flex items-center gap-2">
+                  <IconComponent size={14} />
+                  <span>{agent.name}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
         {/* Central visualization */}
         <div className="flex-1 flex items-center justify-center relative">
           <div className="relative">
@@ -351,6 +405,14 @@ const JarvisAgent = () => {
                   {isListening ? <MicOff size={60} className="animate-pulse" /> : <Mic size={60} />}
                 </button>
               </div>
+              
+              {/* Agent name display */}
+              {selectedAgent && (
+                <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-center">
+                  <p className="text-sm text-gray-300 font-medium">{selectedAgent.name}</p>
+                  <p className="text-xs text-gray-500">Active Workflow</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -373,6 +435,9 @@ const JarvisAgent = () => {
             </div>
           )}
         </div>
+
+        {/* File Upload */}
+        <FileUpload onFilesSelect={setSelectedFiles} />
 
         {/* Input bar */}
         <div className="p-6">
